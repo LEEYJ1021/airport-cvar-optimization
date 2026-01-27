@@ -267,8 +267,6 @@ pytest -m integration
 
 ---
 
-## 11. Citation & License
-
-Please cite the accompanying research paper if you use this code or framework in your work.
+## 11. License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
