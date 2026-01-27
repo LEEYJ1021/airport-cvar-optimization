@@ -10,6 +10,44 @@ This repository provides a complete, reproducible research and engineering stack
 
 The core of the project is an optimization engine that minimizes the **Conditional Value-at-Risk (CVaR)** of the total passenger journey time. Unlike traditional approaches that optimize for the average (mean) time, this framework focuses on mitigating the risk of experiencing excessively long delays (i.e., the "tail risk" of the travel time distribution).
 
+This project is not a generic airport simulation. It is a **risk-theoretic, causally structured evaluation of tail-risk-aware optimization across all major airport access modes** at Incheon International Airport Terminal 1. The system is built around **four operationally distinct but mathematically unified research questions (RQ1–RQ4)**, and validated through a **six-stage experimental battery (E1–E6)** that isolates each methodological contribution.
+
+
+
+## **Four Research Questions (RQ1–RQ4)**
+
+*Where does tail risk originate in the airport departure system?*
+
+Each RQ corresponds to a **distinct ingress modality**, representing a different uncertainty structure and control problem.
+
+| RQ      | Passenger Entry Mode                  | Core Uncertainty                 | Scientific Question                                                                                |
+| ------- | ------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------- |
+| **RQ1** | **Inside terminal (security → gate)** | Endogenous queue spillovers      | Can CVaR-based routing reduce missed-flight risk when congestion is volatile but data is reliable? |
+| **RQ2** | **Rail → terminal → gate**            | Upstream delay propagation       | Can rail delay uncertainty be optimally absorbed before it cascades into security & gate queues?   |
+| **RQ3** | **Taxi / curbside → terminal**        | Weather-driven congestion        | Can METAR-driven probabilistic weather models prevent curbside-induced tail delays?                |
+| **RQ4** | **Parking → terminal → gate**         | Search + walking + transfer risk | Can parking occupancy and walking-time uncertainty be optimized to avoid extreme delays?           |
+
+Together, these RQs create a **multi-modal stress test** of tail-risk management:
+from **high-frequency, high-reliability queues (RQ1)** to **low-frequency, high-variance access risks (RQ4)**.
+
+
+## **Six Core Experiments (E1–E6)**
+
+*Which components actually reduce tail risk — and why?*
+
+The six experiments form a **causal ladder**, moving from data quality → risk modeling → control → stability → personalization → full system integration.
+
+| Exp    | What is being tested        | Policy contrast                 | What it proves                                                                  |
+| ------ | --------------------------- | ------------------------------- | ------------------------------------------------------------------------------- |
+| **E1** | **Data fusion**             | Baseline vs Hybrid-Mean         | Whether probabilistic data blending improves tail prediction                    |
+| **E2** | **Risk objective**          | Hybrid-Mean vs Hybrid-CVaR      | Whether CVaR beats mean optimization for extreme delays                         |
+| **E3** | **Operational feasibility** | CVaR w/ vs w/o hard constraints | Whether risk-aware optimization respects real airport limits                    |
+| **E4** | **Stability control**       | γ = 0 vs γ = 1.5 (hysteresis)   | Whether recommendation volatility can be controlled without hurting performance |
+| **E5** | **Personalization**         | Generic vs passenger-specific   | Whether individual heterogeneity reduces prediction error                       |
+| **E6** | **System integration**      | Q1 only vs Q1–Q4 combined       | Whether full multi-modal optimization dominates siloed routing                  |
+
+
+
 ### Key Features
 
 - **Real-Time Data Ingestion**: Fetches live departure gate congestion data from the Incheon Airport Corporation's public API (B551177).
