@@ -8,9 +8,7 @@ _A Real-Time Optimization System for Multi-Modal Airport Departures, Applying a 
 
 This repository provides a complete, reproducible research and engineering stack for **tail-risk-aware gate assignment and passenger routing** at Incheon International Airport (ICN) Terminal 1. The system is designed to provide personalized, risk-minimized route recommendations to passengers, from their point of arrival at the airport (e.g., railway, bus, taxi, parking) to their departure gate.
 
-The core of the project is an optimization engine that minimizes the **Conditional Value-at-Risk (CVaR)** of the total passenger journey time. Unlike traditional approaches that optimize for the average (mean) time, this framework focuses on mitigating the risk of experiencing excessively long delays (i.e., the "tail risk" of the travel time distribution).
-
-This project is not a generic airport simulation. It is a **risk-theoretic, causally structured evaluation of tail-risk-aware optimization across all major airport access modes** at Incheon International Airport Terminal 1. The system is built around **four operationally distinct but mathematically unified research questions (RQ1–RQ4)**, and validated through a **six-stage experimental battery (E1–E6)** that isolates each methodological contribution.
+The core of the project is an optimization engine that minimizes the **Conditional Value-at-Risk (CVaR)** of the total passenger journey time. Unlike traditional approaches that optimize for the average (mean) time, this framework focuses on mitigating the risk of experiencing excessively long delays (i.e., the "tail risk" of the travel time distribution). The system is built around **four operationally distinct but mathematically unified research questions (RQ1–RQ4)**, and validated through a **six-stage experimental battery (E1–E6)** that isolates each methodological contribution.
 
 
 
