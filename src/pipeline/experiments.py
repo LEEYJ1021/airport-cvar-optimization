@@ -171,7 +171,10 @@ class ExperimentRunner:
     def _run_offline_replay(self, stream, config, exp_id) -> List[Dict[str, Any]]:
         """Simulates user decisions for each snapshot and policy."""
         all_logs = []
-        last_gate_state = {(p.policy_version, s): None for p in self.policies for s in ["Q1", "Q2", "Q3", "Q4"]}
+        # [버그 수정] 기존엔 (policy_version, scenario)만으로 키를 잡아, 서로 다른 승객끼리
+        # (Q4의 서로 다른 주차구역까지) hysteresis 상태를 공유하고 있었다.
+        # (policy_version, scenario, u, seg[, occupancy])로 키를 잡아 승객별 독립 상태로 분리한다.
+        last_gate_state: Dict[tuple, Optional[str]] = {}
 
         for i, (snapshot, df_feat) in enumerate(stream):
             logger.debug(f"Replaying snapshot {i+1}/{len(stream)}")
@@ -188,18 +191,26 @@ class ExperimentRunner:
                                 all_logs.append(log)
         return all_logs
 
+    def _hyst_key(self, policy_version: str, sc_name: str, user_idx: int, seg: str, occupancy: Optional[float] = None) -> tuple:
+        """[버그 수정] hysteresis 상태를 승객 단위로 분리하기 위한 키. Q4는 주차구역(occupancy)까지 포함."""
+        if sc_name == "Q4":
+            return (policy_version, sc_name, user_idx, seg, occupancy)
+        return (policy_version, sc_name, user_idx, seg)
+
     def _simulate_one_user_choice(self, snapshot, df_feat, profile, seg, sc_name, sc_params, policy, config, exp_id, user_idx, last_gate_state):
         """Simulates a single user-policy interaction."""
         req_time = self._get_required_gate_time(snapshot.collected_at, snapshot.snapshot_id, sc_name, seg, user_idx)
-        
+        occ = sc_params.get('occ')
+        hkey = self._hyst_key(policy.policy_version, sc_name, user_idx, seg, occupancy=occ)
+
         candidates = self.evaluator.evaluate(
             snapshot, df_feat, profile, sc_params['type'], sc_params['loc'], req_time, policy,
-            last_gate_state[(policy.policy_version, sc_name)], parking_occupancy=sc_params.get('occ')
+            last_gate_state.get(hkey), parking_occupancy=occ
         )
         if not candidates: return None
 
         rec = candidates[0]
-        last_gate_state[(policy.policy_version, sc_name)] = rec["gate_id"]
+        last_gate_state[hkey] = rec["gate_id"]
 
         seed_key = f"{snapshot.snapshot_id}|{sc_name}|{seg}|{user_idx}|{policy.policy_version}"
         accepted = np.random.default_rng(stable_seed(seed_key, "accept")).random() > config.epsilon
@@ -210,7 +221,8 @@ class ExperimentRunner:
 
         return {
             "ts": snapshot.collected_at, "experiment_id": exp_id, "scenario": sc_name,
-            "snapshot_id": snapshot.snapshot_id, "user_segment": seg, "policy_version": policy.policy_version,
+            "snapshot_id": snapshot.snapshot_id, "user_segment": seg, "u": user_idx, "occupancy": occ,
+            "policy_version": policy.policy_version,
             "recommended_gate": rec["gate_id"], "recommended_score": rec["score"],
             "propensity": self._calculate_propensity(candidates), "accepted": accepted,
             "accepted_gate": chosen["gate_id"], "realized_total": realized_total, "missed": missed
@@ -224,7 +236,15 @@ class ExperimentRunner:
                      "E4": ["cvar", "cvar-nohys"], "E5": ["cvar", "cvar-nopers"]}
         
         for code, pol_stems in exp_codes.items():
-            df_exp = df[df['policy_version'].str.contains(f"({pol_stems[0]}|{pol_stems[1]})", regex=True)]
+            # [버그 수정] 기존 정규식 f"({stem1}|{stem2})"은 부분일치라서
+            # "hmean"이 "hmean-hardon"과, "cvar"가 "cvar-nohys"/"cvar-nopers"와도
+            # 걸려서 experiment_metrics에 의도치 않은 policy_version이 잘못된
+            # experiment_code로 함께 들어갔다. policy_version은 f"{sys_ver}-{stem}"
+            # 형식이므로 접미사 정확매칭(endswith)으로 교체한다.
+            mask = df['policy_version'].apply(
+                lambda pv, stems=pol_stems: any(pv.endswith(f"-{s}") for s in stems)
+            )
+            df_exp = df[mask]
             for (policy, scenario), group in df_exp.groupby(['policy_version', 'scenario']):
                 realized = group['realized_total'].dropna().tolist()
                 if not realized: continue
