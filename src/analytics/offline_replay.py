@@ -179,14 +179,31 @@ class OfflineReplayAnalyzer:
 
     def _generate_policy_summary(self) -> pd.DataFrame:
         """Creates a summary table with switch rates for each policy."""
-        def switch_rate(df_group):
-            df_sorted = df_group.sort_values("ts")
-            if len(df_sorted) <= 1: return 0.0
-            switches = (df_sorted["recommended_gate"].shift() != df_sorted["recommended_gate"]).sum()
-            return switches / (len(df_sorted) - 1)
+        # [버그 수정] 기존엔 policy_group으로만 그룹핑해서, 서로 다른 시나리오(Q1~Q4)와
+        # 서로 다른 승객의 추천까지 timestamp 순서 하나로 섞어 "스위치"를 셌다.
+        # (u, occupancy 컬럼이 없던 구버전 로그에서는 이 함수가 개별 승객 궤적을
+        # 애초에 복원할 수 없었다 — 이제 로그에 u/occupancy가 있으므로 정확히 계산한다.)
+        has_passenger_id = "u" in self.df_log.columns
+
+        def switch_rate_for_group(df_group: pd.DataFrame) -> float:
+            if not has_passenger_id:
+                # u 컬럼이 없는 옛 로그로 실행된 경우: 정확한 계산이 불가능하므로
+                # NaN을 반환해 "모른다"는 사실을 숨기지 않는다 (침묵하는 오답보다 낫다).
+                return np.nan
+            passenger_keys = ["scenario", "u", "user_segment", "occupancy"] if "occupancy" in df_group.columns \
+                else ["scenario", "u", "user_segment"]
+            total_switches, total_pairs = 0, 0
+            for _, sub in df_group.groupby(passenger_keys, dropna=False):
+                sub_sorted = sub.sort_values("ts")
+                if len(sub_sorted) <= 1:
+                    continue
+                gates = sub_sorted["recommended_gate"].values
+                total_switches += int((gates[1:] != gates[:-1]).sum())
+                total_pairs += len(gates) - 1
+            return total_switches / total_pairs if total_pairs > 0 else np.nan
 
         summary = self.df_log.groupby("policy_group").apply(lambda g: pd.Series({
             **self._summarize_metrics(g),
-            "switch_rate": switch_rate(g)
+            "switch_rate": switch_rate_for_group(g)
         })).reset_index()
         return summary
