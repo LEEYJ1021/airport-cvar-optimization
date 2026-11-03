@@ -2,7 +2,7 @@
 
 _Replication code for an offline-replay study of departure guidance at Incheon International Airport (ICN) Terminal 1. The repository decomposes a bundled, tail-risk-aware guidance policy into operator-controllable levers (planning allowance, recommendation stability, tail-risk protection, hard operating limits) and introduces the **Buffer Allocation Gap (BAG)**, a monitoring indicator for vertical equity._
 
-> **Research tool, not an operational system.** All results come from an offline replay of real operational snapshots combined with **synthetic passengers**. Passenger behavior, compliance and personalization effects are simulator-defined. The results quantify the buffer a guidance framework allocates; they are **not evidence about real passengers**. See [Section 11](#11-evaluation-design-and-verification--validation-status).
+> **Research tool, not an operational system.** All results come from an offline replay of real operational snapshots combined with **synthetic passengers**. Passenger behavior, compliance and personalization effects are simulator-defined.
 
 ---
 
