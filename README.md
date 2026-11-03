@@ -1,136 +1,176 @@
-# Airport CVaR Optimization: Attributing the Effects of a Tail-Risk-Aware Departure Guidance Policy
+# Who Gets the Buffer? Allocation and Stability in Airport Departure Guidance
 
-_An offline replay framework for multimodal airport departures at Incheon International Airport (ICN) Terminal 1. It combines quality-weighted distributional prediction, a Conditional Value-at-Risk (CVaR) routing objective, hard constraints, a hysteresis switching penalty, and passenger-level personalization, and it attributes the effects of each component through ablation._
+_Replication code for an offline-replay study of departure guidance at Incheon International Airport (ICN) Terminal 1. The repository decomposes a bundled, tail-risk-aware guidance policy into operator-controllable levers (planning allowance, recommendation stability, tail-risk protection, hard operating limits) and introduces the **Buffer Allocation Gap (BAG)**, a monitoring indicator for vertical equity._
+
+> **Research tool, not an operational system.** All results come from an offline replay of real operational snapshots combined with **synthetic passengers**. Passenger behavior, compliance and personalization effects are simulator-defined. The results quantify the buffer a guidance framework allocates; they are **not evidence about real passengers**. See [Section 11](#11-evaluation-design-and-verification--validation-status).
 
 ---
 
 ## 1. Project Overview
 
-This repository provides a reproducible research and engineering stack for evaluating **tail-risk-aware passenger routing** at ICN Terminal 1. For each passenger, the system recommends a route from the point of arrival (inside the terminal, rail, curbside bus or taxi, or parking) to a departure gate. Throughout this repository, **"gate" denotes one of the 12 departure security checkpoints of Terminal 1**, not an aircraft boarding gate.
+### 1.1 The planning question
 
-The routing engine integrates the following components within a single 5-minute decision cycle:
+Airport operators that issue departure guidance implicitly make two service-standard decisions, usually without stating or monitoring them:
 
-- quality-weighted distributional prediction,
-- a CVaR objective (mean and 90th-percentile objectives are also supported),
-- hard operating constraints,
-- a hysteresis-based switching penalty, and
-- passenger-level personalization.
+1. **How much planning allowance (time buffer) does each passenger segment receive?**
+2. **How often may a recommendation change?**
 
-Because the full policy differs from a mean-optimizing alternative in several components at once, no single component can be credited with the observed differences. The repository therefore **evaluates the bundle and then decomposes it through ablation variants**. The framing is operational: it asks which levers an airport operator controls (how much planning allowance each passenger segment receives, how reluctant guidance is to change, which part of the journey-time distribution to protect) and what each lever does to efficiency, stability, tail risk, and allocation.
+Both are distributional, public-sector decisions. This repository treats them as explicit operator levers and asks what each costs, and who bears it. The routing engine is the **instrument for comparing levers**, not a new optimization algorithm.
 
-### What the offline replay shows (summary)
+### 1.2 Four operator levers
 
-All statements are conditional on the simulation protocol described in the scope note below.
+| Lever | What the operator decides | Parameter in this study | Outcome dimension |
+| ----- | ------------------------- | ----------------------- | ----------------- |
+| Planning allowance (personalization) | How much buffer each segment receives | Profile factors on walking and check-in times | Allocation, mean time |
+| Switching penalty (hysteresis) | How reluctant guidance is to change | γ = 1.5 score-minutes | Stability |
+| Risk objective | Which part of the journey-time distribution to protect | CVaR at level 0.9, N = 200 scenarios per route | Tail risk |
+| Hard operating constraints | Which limits are non-negotiable | Operating hours, capacities, deadlines, accessible routes | Feasibility |
 
-- **Efficiency cost.** Moving from Hybrid-Mean to Hybrid-CVaR raises mean parking-to-gate journey time by 7.72 minutes. Along the decomposition path used, 7.57 minutes are attributable to personalization and 0.15 minutes to the CVaR objective, hard constraints, and hysteresis combined.
-- **Stability.** Recommendation switching in the parking-to-gate scenario falls from 64.9% (Hybrid-Mean) to 26.0% (Hybrid-CVaR). The reduction appears only in the configuration that combines hysteresis and personalization; the nested design cannot separate their roles.
-- **Allocation.** The Buffer Allocation Gap (BAG) between vulnerable and general passengers rises from 0.03 to 7.83 minutes. The gap arises from the personalization factors, which are generator inputs, so it is an implementation consistency check and not an empirical finding about real passengers.
-- **CVaR objective.** The standalone contribution of the CVaR objective is **not established** under nominal conditions. A weather-shock test is consistent with a stress-time role but is confounded by personalization (see Section 11).
-- **Constraints.** Hybrid-CVaR records zero constraint violations; removing the hard constraints yields 2,362 infeasible recommendations (6.83%).
+Data-quality weighting and uncertainty inflation operate inside the engine; data fusion is varied only in E1.
 
-### Journey types (Q1–Q4)
+### 1.3 Research questions
 
-Four journey types are modeled. Q2–Q4 add one upstream stochastic stage ahead of the shared check-in-to-gate segment.
+| RQ | Question | Gap addressed |
+| -- | -------- | ------------- |
+| **RQ1** | How much of the recommended-time cost of a bundled guidance policy is attributable to each operator-controllable lever? | A tail-risk-aware policy differs from a mean-optimizing one in several components at once, so no single component can be credited. |
+| **RQ2** | Which lever or combination governs recommendation stability, and at what cost to efficiency and tail risk? | Instability is usually smoothed ad hoc, not through hysteresis. |
+| **RQ3** | How does the policy allocate planning allowance across passenger segments, and can this be monitored with a single indicator? | Allocation through personalization is rarely observable to the operator. |
 
-| Module | Passenger entry mode                  | Upstream uncertainty                 | Operational question                                                                 |
-| ------ | ------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| **Q1** | **Inside terminal (check-in → gate)** | Queue spillovers at counters and gates | How should guidance route passengers when congestion is volatile but data are reliable? |
-| **Q2** | **Rail → check-in → gate**            | Rail transfer and entry-queue delay  | How should rail-side delay uncertainty be absorbed before it reaches security and gate queues? |
-| **Q3** | **Taxi / curbside → check-in → gate** | Weather-sensitive curbside queueing  | How should precipitation-driven curbside delay be reflected in guidance?             |
-| **Q4** | **Parking → check-in → gate**         | Parking search plus walking and transfer | How should occupancy-dependent search time and walking-time uncertainty be handled?  |
+### 1.4 Journey types (Q1–Q4)
 
-### Research questions (RQ1–RQ3)
+"Gate" denotes one of the **12 departure security checkpoints** of Terminal 1, not an aircraft boarding gate. Q2–Q4 add one upstream stochastic stage ahead of the shared check-in-to-gate segment.
 
-| RQ      | Question                                                                                                              |
-| ------- | --------------------------------------------------------------------------------------------------------------------- |
-| **RQ1** | How much of the efficiency cost of a bundled tail-risk-aware policy is attributable to each operator-controllable component? |
-| **RQ2** | Which component or combination governs recommendation stability, and at what cost to efficiency and acceptance?       |
-| **RQ3** | How does the policy allocate planning allowance across passenger segments, and can this be monitored with a single metric (the BAG)? |
+| Module | Entry mode | Upstream uncertainty |
+| ------ | ---------- | -------------------- |
+| **Q1** | Check-in → gate | None (single-stage) |
+| **Q2** | Rail → check-in → gate | Rail transfer and entry-queue delay |
+| **Q3** | Curbside (bus or taxi) → check-in → gate | Weather-sensitive curbside queueing |
+| **Q4** | Parking → check-in → gate | Occupancy-dependent parking search (2 + 10ρ², giving 5.6 and 10.1 min at occupancy 0.60 and 0.90) |
 
-### Experimental battery (E1–E13)
+### 1.5 The Buffer Allocation Gap (BAG)
 
-*Which components carry which effects, and how robust are the results?*
+$$
+\mathrm{BAG} = \mathbb{E}[T \mid \text{vulnerable}] - \mathbb{E}[T \mid \text{general}]
+$$
 
-The ten core experiments (E1–E10) address the research questions and robustness. Three supplementary analyses (E11–E13) provide diagnostics, a policy-selection view, and sensitivity checks.
+- **Vulnerable passengers** meet at least one criterion: age ≥ 65; mobility score ≤ 2 on a 5-point scale (walking speed below 1.0 m/s); travel with one or more children under 12; or unaccompanied-minor status. All others, including heavy-baggage travellers, are *general*.
+- The BAG is an **outcome indicator only**. It does not enter the routing score and no equity penalty is applied.
+- **Remark 1 (BAG and cohort allowances).** If the non-personalization components change expected journey time by about the same amount for both groups, then BAG ≈ Δ₀ + ā_V − ā_G, where Δ₀ is the BAG without personalization and ā_V, ā_G are the cohort-weighted mean allowances. The BAG is therefore set by the **cohort allowances and the cohort mix, not by the routing objective**.
+- The BAG is **not a quantity to minimize or maximize**. A zero gap under heterogeneous needs means vulnerable passengers receive generic plans; a large gap is the intended consequence when needs differ. It should be read against a **need-based reference** (the gap implied by measured segment differences in walking and processing times). A one-sided cap would cut the allowance whenever true need exceeds it, so a two-sided corridor around the reference is preferable (proposed, not tested).
 
-| Exp     | Focus                          | Policy contrast                                          | Research question | What it evaluates                                                                           |
-| ------- | ------------------------------ | -------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------- |
-| **E1**  | Data fusion                    | Baseline vs. Hybrid-Mean                                 | Context for RQ1   | Effect of quality-weighted blending on Q90 and switching (partly built into the simulator, see Section 11) |
-| **E2**  | Bundled policy                 | Hybrid-Mean vs. Hybrid-CVaR, decomposed via CVaR-NoPersonalization | RQ1     | Attribution of the mean-time, CVaR, miss-rate, and switch-rate changes                       |
-| **E3**  | Hard constraints               | Hybrid-CVaR vs. CVaR-NoConstraints                       | RQ1               | Violation rate with and without constraints                                                  |
-| **E4**  | Hysteresis                     | γ = 0 vs. γ = 1.5                                        | RQ2               | Switch rate, mean time, CVaR, and acceptance                                                 |
-| **E5**  | Personalization                | Generic vs. personalized profiles                        | RQ1, RQ3          | Average treatment effect on journey time                                                     |
-| **E6**  | Journey complexity             | Q1 to Q4                                                 | Face validity     | Whether mean time and tail risk rise with the number of upstream stages                      |
-| **E7**  | Chronological holdout          | First 18 vs. last 18 snapshots                           | Robustness        | CVaR drift over a short period                                                               |
-| **E8**  | Unseen checkpoints             | In-domain (DG1–DG4) vs. out-of-domain (DG5–DG6)          | Robustness        | CVaR, violations, and KL divergence of recommendations                                       |
-| **E9**  | Weather shock                  | 5 mm rainfall perturbation                               | RQ1 (exploratory) | Relative CVaR deterioration and miss rate under one shock magnitude                          |
-| **E10** | Allocation                     | Vulnerable vs. general passengers                        | RQ3               | Buffer Allocation Gap                                                                        |
-| **E11** | Positivity / propensity diagnostics | Logged propensity distribution                      | Diagnostic        | Overlap for off-policy evaluation (minimum propensity > 0.026)                               |
-| **E12** | Stability–efficiency–equity frontier | Pareto view across policies                        | Supplementary     | A descriptive aid for policy selection; not part of the core attribution                     |
-| **E13** | Hyperparameter sensitivity     | ±25% parameter perturbation                              | Diagnostic        | Robustness to moderate miscalibration of calibrated parameters                               |
+### 1.6 Main findings (conditional on the replay)
 
-### Key Features
+| Question | Finding | Section / table in the manuscript |
+| -------- | ------- | --------------------------------- |
+| **RQ1**: where does the recommended-time cost come from? | Q4: Hybrid-Mean → Hybrid-CVaR adds **7.72 min** (18.4%) to mean time; **7.57 min** is attributable to personalization and **0.15 min** to the CVaR objective, constraints, switching penalty and risk inflation combined. Across journey types, personalization accounts for 96.5–100.4% of the APT increase, and the other components add less than 0.35 min to either APT or CVaR₀.₉. | §5.2, Table 5 |
+| **RQ2**: what governs stability? | Q4 switch rate falls from 59.1% (CVaR-NoHysteresis) to **26.0%** (Hybrid-CVaR) with no significant change in mean time (+0.05 min, p = 0.740) or CVaR₀.₉ (p = 0.312). The effect is identified only **within the personalized policy**; without personalization the rate was 80.0% and the nested design cannot separate the two components. | §5.3, Table 6 |
+| **RQ3**: how is allowance allocated? | Q4 **BAG = 7.83 min**, versus 0.03 (Hybrid-Mean) and 0.04 (CVaR-NoPersonalization). Cohort allowances range from +1.8 to +15.2 min. Heavy-baggage travellers receive +6.7 min yet are counted as general. | §5.4, Fig. 5 |
+| Hard constraints | 0 violations under Hybrid-CVaR (by construction) versus **2,362 infeasible recommendations (6.83%)** without constraints. | §5.5 |
+| Standalone CVaR objective | **Not established.** The bundle without personalization leaves pooled CVaR₀.₉ unchanged at the reported precision. | §5.1 |
 
-- **Real-Time Data Ingestion**: Fetches live departure-gate congestion data from the Incheon Airport Corporation public API (B551177).
-- **External Data Fusion**: Integrates METAR weather reports (KMA) and official passenger forecasts, with a source-level quality score and a tiered fallback hierarchy for degraded data.
-- **Probabilistic Passenger Modeling**: Uses profile-based multiplicative factors (walking and check-in time) and Bayesian imputation for incomplete profiles.
-- **Distributional Forecasting**: Combines an ensemble of predictive models (quantile heuristic, Markov–Kalman, Bayesian personalization) by an equal-weight average of predictive quantiles, then blends them with real-time observations according to data quality.
-- **CVaR-Based Optimization**: Scores candidate routes with Monte Carlo scenarios (N = 200 per route) and a composite score that adds closure, delay, switching, and risk terms to the chosen objective.
-- **Hysteresis**: Penalizes changing the recommendation between consecutive cycles. In the replay, its stabilizing effect was observed only jointly with personalization (Section 12.3).
-- **Personalization and the BAG**: Passenger-level factors allocate planning allowance across segments. The BAG, the difference in mean journey time between vulnerable and general passengers, makes this allocation observable. It is a monitoring metric and does not enter the routing score.
-- **Off-Policy Evaluation Machinery**: Implements inverse propensity scoring and doubly robust (DR) estimators with snapshot-level bootstrap intervals. In this simulator the DR and naive estimates coincide (Section 10), so the machinery serves as a consistency check for future live deployment.
-- **Robustness Tests**: Chronological holdout, unseen-checkpoint transfer, a weather shock, and parameter-perturbation sensitivity.
-- **Offline Experimentation Framework**: Runs offline replay experiments (E1–E13) on historical snapshots with identical synthetic passengers across policies.
-- **Analytics and Reporting**: Welch's t-tests, Cohen's d, Cliff's delta, Holm–Bonferroni correction across the core experiments, and exports of tables and figures.
+**Price of the allocation decision.** The 7.57 min is the allowance itself, expressed in the unit passengers see. It is a single-point analogue of the price of fairness; a frontier would require the allowance sweep listed in [Section 14](#14-limitations-and-research-agenda).
 
-The codebase is deterministic: with the same database snapshots and the fixed random seed (42), experiments and analyses yield identical results.
-
-> **Note on scope**: All results in this repository derive from an **offline replay** of 36 consecutive five-minute snapshots of real operational data (a 3-hour window) combined with **synthetic passenger journeys**. They are not derived from live deployment or observed passenger behavior. The simulator is *model-in-the-loop* (journey outcomes are sampled from the same distributions used for optimization), passenger compliance follows an assumed ε-greedy rule (ε = 0.2), and recommendations do not feed back into queue states. Personalization factors are generator inputs. See Section 11 for what is and is not validated. **This repository is a research tool and is not intended for operational use.**
+> **Reading the numbers.** The personalization effect follows from the generator's profile model. It quantifies the buffer the framework allocates; it is neither evidence that generic predictions are biased nor an efficiency gain. The BAG magnitude mirrors the generator's cohort allowances and tests the simulator, not real populations.
 
 ---
 
 ## 2. System Architecture
 
-The system is designed with a modular, pipeline-oriented architecture:
+### 2.1 From levers to outcomes
+
+```
+Operator levers                 5-minute routing engine                Monitored outcomes
+-----------------               ------------------------               -------------------
+Planning allowance   ─┐         1. Quality-weighted                    Efficiency  : APT
+Switching penalty γ  ─┤──────►     distributional prediction  ───────► Tail risk   : CVaR0.9, miss rate
+Risk objective       ─┤         2. Monte Carlo scenarios (N = 200)     Stability   : switch rate
+Hard constraints     ─┘         3. Composite score → one recommendation Allocation : BAG
+```
+
+Every decision, its inputs and its quality annotations are stored under a single `snapshot_id`, so any decision can be reproduced exactly by offline replay.
+
+### 2.2 Pipeline layers
 
 ```
 [APIs: Congestion, METAR, Forecast]
              |
              v
 [1. Ingestion Layer] -> (RealtimeCongestionService, ExternalDataIngestor)
-     - Fetches and persists raw data to MySQL.
-     - Handles API retries and fallbacks.
+     - Fetches and persists raw data to MySQL; handles retries and fallbacks.
              |
              v
 [2. Feature Engineering Layer] -> (T1FeatureBuilder)
-     - Fuses data sources.
-     - Computes features like load-to-capacity ratio, queue pressure, and risk scores.
-     - Persists features to the Feature Store (MySQL).
+     - Fuses sources; computes load-to-capacity ratio, queue-pressure index,
+       composite congestion risk score R; persists to the feature store.
              |
              v
 [3. Prediction Layer] -> (Ensemble: Kalman, Markov, Heuristic)
-     - Generates distributional forecasts for gate wait times.
-     - Blends real-time observations with predictions based on data quality.
+     - Distributional forecasts of gate wait times, blended with real-time
+       observations by a quality-dependent logistic weight.
              |
              v
 [4. Optimization Layer] -> (OptimizationAgent)
-     - Models passenger-specific travel times (walking, check-in).
-     - Scores all possible routes using the CVaR-inclusive objective function.
-     - Applies penalties for gate closures, missed flights, and recommendation switching (hysteresis).
+     - Passenger-specific walking and check-in times (personalization).
+     - Scores every candidate route with the composite score below.
              |
              v
 [5. Application Layer] -> (AirportOptimizationEngine, ExperimentRunner)
-     - Exposes functionality via an interactive CLI (Q1-Q4).
-     - Runs automated offline replay experiments (E1-E13) to evaluate policies.
+     - Interactive CLI (Q1-Q4) and automated offline replay experiments.
              |
              v
 [6. Analytics Layer] -> (OfflineReplayAnalyzer)
-     - Loads experiment logs from the database.
-     - Computes performance metrics (APT, CVaR, Miss Rate).
-     - Performs statistical significance testing, component decomposition, and generates reports.
+     - Metrics, statistical tests, component decomposition, reporting.
 ```
 
-Every decision, its inputs, and its quality annotations are stored under a single `snapshot_id`, so any decision can be reproduced exactly by offline replay.
+### 2.3 Routing objective and score
+
+For each candidate route *j*, N = 200 Monte Carlo scenarios are drawn per cycle and total journey times T_j are built by summing all stochastic and deterministic components for the same draw. Three objectives are supported: expected time, the 90th percentile, and CVaR₀.₉ (the average of the worst 10% of simulated outcomes, by sample average approximation):
+
+$$
+\mathrm{CVaR}_{0.9}(T_j) = \mathbb{E}\left[T_j \mid T_j \ge \mathrm{VaR}_{0.9}(T_j)\right]
+$$
+
+$$
+\mathrm{Score}_j = \mathrm{Obj}(T_j) + P_{\text{closure}} + P_{\text{delay}} + P_{\text{hyst}} + P_{\text{risk}}, \qquad
+P_{\text{hyst}} = \gamma_{\text{switch}} \cdot \mathbf{1}[g_j \ne g_{\text{previous}}]
+$$
+
+| Term | Role | Setting |
+| ---- | ---- | ------- |
+| `P_closure` | Large constant for routes that violate hard constraints | Operating hours, capacities, boarding deadlines, accessible routes |
+| `P_delay` | Penalizes expected lateness beyond the boarding deadline | η_miss held constant (see configuration files) |
+| `P_hyst` | Switching penalty (hysteresis); builds stability into the decision rule | γ_switch = 1.5 |
+| `P_risk` | Scales the composite congestion risk score | η_risk = 0.3 |
+
+γ and η are **empirically calibrated conversion factors** ("score-minutes") that map dimensionless terms to the minute scale of the score; they are not physical or monetary equivalences.
+
+### 2.4 Distributional prediction and data quality
+
+- **Source-level reliability** = 0.5·freshness + 0.3·completeness + 0.2·response; **decision-layer quality** q = 0.4·availability + 0.4·completeness + 0.2·freshness. Weights were elicited by pairwise comparison (AHP).
+- **Tiered fallback**: real-time API (reliability ≥ 0.8), recent cache under 15 min (≥ 0.6), EWMA imputation (0.4), day-of-week/time-of-day average (0.2), conservative worst-case default (0.1).
+- **Ensemble**: quantile heuristic, Markov–Kalman latent-state model and Bayesian personalization component, combined by an **equal-weight average of predictive quantiles**. Stacking weights were not learned because about 36 snapshots per checkpoint are too few.
+- **Blending**: ω = 1 / (1 + exp[−6(q − 0.5)]); μ_blend = ω·μ_rt + (1 − ω)·μ_ens, with the variance combined through the covariance of real-time and ensemble predictions.
+- **Uncertainty inflation**: σ is inflated by (1 + λ_risk · max{0, R − R_thr}/100) with λ_risk = 0.15 and R_thr = 60.
+- In deployment the covariance is estimated over a rolling 30-day window; the replay has only 36 snapshots and used the zone-level covariance from the calibration snapshots, so **the rolling estimator is specified but not exercised**.
+
+### 2.5 Personalization
+
+Individual heterogeneity enters through multiplicative factors on baseline walking and check-in components, estimated with a hierarchical Bayesian model that pools information across similar profiles. Incomplete profiles are imputed with population medians and their uncertainty is inflated. **The factor values are generator inputs**; the cohort-level allowances they produce are listed in [Section 12.4](#124-planning-allowance-by-cohort).
+
+### 2.6 Policy configurations (ablation design)
+
+Hybrid-CVaR activates all components. Because moving to it from Hybrid-Mean changes five things at once, the transition is decomposed with variants that each remove one component. "Hysteresis" and "switching penalty" are used interchangeably.
+
+| Policy | Data integration | Objective | Hard constraints | Switching penalty | Personalization | Risk inflation |
+| ------ | ---------------- | --------- | ---------------- | ----------------- | --------------- | -------------- |
+| Baseline | Real-time only | Mean | No | No | No | No |
+| Hybrid-Mean | Blended + ensemble | Mean | No | No | No | No |
+| **Hybrid-CVaR** | Blended + ensemble | CVaR₀.₉ | Yes | γ = 1.5 | Yes | Yes |
+| CVaR-NoHysteresis | Blended + ensemble | CVaR₀.₉ | Yes | γ = 0 | Yes | Yes |
+| CVaR-NoPersonalization | Blended + ensemble | CVaR₀.₉ | Yes | γ = 1.5 | No | Yes |
+| CVaR-NoConstraints | Blended + ensemble | CVaR₀.₉ | No | γ = 1.5 | Yes | Yes |
+
+CVaR-NoPersonalization (generic profiles) is also the comparator for the allocation analysis. The ablation is **nested, not factorial**; the arm "CVaR-NoPersonalization with γ = 0" was not run.
 
 ---
 
@@ -179,154 +219,131 @@ airport-cvar-optimization/
 ## 4. Prerequisites
 
 | Component | Version / Notes |
-|-----------|-----------------|
-| Python    | 3.10+ |
-| MySQL     | 8.x (or compatible, e.g., Aurora MySQL) |
-| APIs      | Incheon Airport Corp (B551177) & KMA METAR service keys |
-| OS        | Linux/macOS/WSL2 recommended. Windows is supported. |
+| --------- | --------------- |
+| Python | 3.10+ |
+| MySQL | 8.x (or compatible, e.g., Aurora MySQL) |
+| APIs | Incheon Airport Corporation (B551177) and KMA METAR service keys |
+| OS | Linux/macOS/WSL2 recommended; Windows is supported |
 
 ---
 
 ## 5. Environment Setup
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/your-username/airport-cvar-optimization.git
-    cd airport-cvar-optimization
-    ```
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/your-username/airport-cvar-optimization.git
+   cd airport-cvar-optimization
+   ```
 
-2.  **Create and activate a virtual environment:**
-    ```bash
-    python -m venv .venv
-    source .venv/bin/activate   # On Windows: .venv\Scripts\activate
-    ```
+2. **Create and activate a virtual environment**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate   # Windows: .venv\Scripts\activate
+   ```
 
-3.  **Install dependencies:**
-    ```bash
-    pip install --upgrade pip
-    pip install -r requirements.txt
-    ```
+3. **Install dependencies**
+   ```bash
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
 
-4.  **Configure environment variables:**
-    Copy the example file and edit it with your credentials. **Never commit the `.env` file.**
-    ```bash
-    cp .env.example .env
-    nano .env
-    ```
-    You will need to provide your MySQL connection details and API service keys.
+4. **Configure environment variables.** Copy the example file and add your MySQL credentials and API keys. **Never commit `.env`.**
+   ```bash
+   cp .env.example .env
+   nano .env
+   ```
 
-5.  **Set up the database:**
-    Connect to your MySQL server and create the database.
-    ```bash
-    mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS icn_airport_analysis CHARACTER SET utf8mb4;"
-    ```
+5. **Create the database**
+   ```bash
+   mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS icn_airport_analysis CHARACTER SET utf8mb4;"
+   ```
 
-6.  **Run database migrations:**
-    This script creates and alters all necessary tables idempotently.
-    ```bash
-    python -m src.db.migrations
-    ```
-    You can also run this from the `01_run_migrations.ipynb` notebook to verify.
+6. **Run migrations** (idempotent; also available in `01_run_migrations.ipynb`)
+   ```bash
+   python -m src.db.migrations
+   ```
 
-The schema has eight tables in three functional domains: **operational** (`congestion_data`, `congestion_features_t1`), **predictive** (`passenger_forecast_raw`, `passenger_forecast_t1`, `metar_raw`), and **experimental** (`experiment_runs`, `experiment_metrics`, `policy_evaluation_log`). The `snapshot_id` is the temporal join key, and `experiment_id` and `policy_version` provide experimental traceability. Data follow a bronze, silver, and gold layering: raw API responses, parsed and validated data with quality annotations, and feature-engineered datasets for the prediction ensemble.
+The schema has eight tables in three domains: **operational** (`congestion_data`, `congestion_features_t1`), **predictive** (`passenger_forecast_raw`, `passenger_forecast_t1`, `metar_raw`) and **experimental** (`experiment_runs`, `experiment_metrics`, `policy_evaluation_log`). `snapshot_id` is the temporal join key; `experiment_id` and `policy_version` provide experimental traceability. Data follow a bronze (raw API responses), silver (parsed and validated, with quality annotations) and gold (feature-engineered) layering.
 
 ---
 
 ## 6. How to Run
 
-The system can be operated in three main modes via the `scripts/` directory.
-
 ### Mode 1: Interactive CLI
 
-Run an interactive session to get route recommendations for the journey types Q1–Q4.
+Get route recommendations for journey types Q1–Q4.
 
 ```bash
 python scripts/run_interactive.py
 ```
 
-### Mode 2: Automated Experiments
+### Mode 2: Automated offline replay
 
-Run the offline replay experiments (E1–E13). This script will:
-1.  Collect a stream of real-time data snapshots.
-2.  Simulate passenger decisions under the policy configurations, using identical synthetic passengers for every policy.
-3.  Log all evaluation data and summary metrics to the MySQL database.
+This script (i) collects a stream of real-time snapshots, (ii) replays every policy on **identical synthetic passengers** under identical snapshot conditions, and (iii) logs all evaluation data and summary metrics to MySQL.
 
 ```bash
-# Run with default parameters (180 min duration, 5 min interval)
+# Defaults: 180 min duration, 5 min interval (= 36 snapshots)
 python scripts/run_experiments.py
 
-# Run with custom parameters
+# Quick smoke test only; does NOT match the study design
 python scripts/run_experiments.py --duration 120 --interval 5 --users 10 --epsilon 0.1
 ```
 
-A 180-minute duration at a 5-minute interval yields 36 snapshots. The reported study used **960 synthetic passengers per snapshot (34,560 journeys)** and an assumed compliance rate of **ε = 0.2**; set `--users` and `--epsilon` accordingly to match the study design. The custom-parameter example above is for quick smoke tests only.
+The reported study used **36 consecutive five-minute snapshots, 960 synthetic passengers per snapshot (34,560 journeys), compliance ε = 0.2 and random seed 42**. Set `--users 960 --epsilon 0.2` to match it.
 
-### Mode 3: Reporting and Analysis
-
-After running an experiment, generate a full statistical report from the logged data.
+### Mode 3: Reporting and analysis
 
 ```bash
-# Replace <uuid> with the ID from the experiment run
+# Replace <uuid> with the ID of the experiment run
 python scripts/export_reporting.py --experiment-id <your-experiment-uuid>
 ```
-This will produce an `output/` directory containing the results described below.
+
+The codebase is deterministic: with the same database snapshots and seed, experiments and analyses give identical results.
 
 ---
 
 ## 7. Generated Outputs
 
-Running the analysis script (`export_reporting.py` or `04_statistical_analysis.ipynb`) produces the following in the `output/` directory:
+Running `export_reporting.py` (or `04_statistical_analysis.ipynb`) writes to `output/`. Table and figure references are to the manuscript; the mapping is indicative.
 
--   **Primary Report (`airport_experiment_results.xlsx`)**: An Excel workbook containing the key data tables on separate sheets.
--   **Core Metrics (CSV)**:
-    -   `policy_summary.csv`: Overall (pooled) performance metrics (APT, CVaR, miss rate, switch rate) for each policy.
-    -   `Q4_metrics.csv`: Detailed metrics for the Q4 (parking) scenario, used for the primary policy comparisons.
-    -   `e6_metrics.csv`: Performance of the main CVaR policy across the journey types Q1–Q4.
-    -   `Q4_ci.csv`: Snapshot-level bootstrap 95% confidence intervals for mean and CVaR metrics.
--   **Statistical Tests (CSV)**:
-    -   `e1_e5_tests.csv`: Welch's t-tests, Cohen's d, and Holm–Bonferroni-corrected p-values for key policy comparisons (E1–E5).
--   **Component Decomposition**:
-    -   `component_decomposition.csv`: Sequential decomposition of the Hybrid-Mean → Hybrid-CVaR transition into (i) the CVaR objective, hard constraints, and hysteresis, and (ii) personalization, for each of the four journey types. The decomposition is path-specific; shares along the alternative ordering are not computed.
--   **Supplementary Causal and Bayesian Analyses (exploratory)**:
-    -   `causal_results.csv` & `causal_forest.png`: Heterogeneous treatment-effect estimates for the CVaR policy.
-    -   `bayesian_contrasts.csv` & `bayesian_contrast.png`: Posterior contrasts of policy performance.
-    -   `propensity_overlap.png`: Propensity-score distribution for the common-support check (E11).
--   **Cost-Benefit and Sensitivity Analysis**:
-    -   `cost_benefit.png` & `cost_benefit_summary.csv`: A passenger-side time-cost proxy that converts realized journey time into a monetary value. It excludes airport, airline, and ground-handling costs.
-    -   `cba_sensitivity.csv`: Sensitivity of the cost ordering to the valuation factor (±20%).
--   **Performance Visualizations**:
-    -   `Q4_boxplot.png`: Distribution of total journey times by policy.
-    -   `Q4_tail_metrics.png`: Tail-risk metrics (Q90, CVaR) by policy.
-    -   `pareto_frontier.png`: Descriptive trade-off view across efficiency, risk, and equity (E12, supplementary).
-    -   `Q4_hourly_trend.png`: Metrics over the time of day.
--   **Publication-Ready Figures (`figures/`)**: A subdirectory containing curated figures.
+| Output | Content | Used for |
+| ------ | ------- | -------- |
+| `airport_experiment_results.xlsx` | Primary workbook with key tables on separate sheets | All |
+| `policy_summary.csv` | Pooled APT, CVaR₀.₉, acceptance, miss rate, switch rate per policy | Table 4 |
+| `Q4_metrics.csv` | Detailed Q4 (parking-to-gate) metrics | Table 6, Figs. 3–4 |
+| `Q4_ci.csv` | Snapshot-level BCa bootstrap 95% intervals (B = 1,000) | Intervals throughout |
+| `e1_e5_tests.csv` | Welch's t-tests, Cohen's d, Holm–Bonferroni-adjusted p-values | §5.2–5.4, Table 7 |
+| `component_decomposition.csv` | Hybrid-Mean → Hybrid-CVaR decomposed into "other" (CVaR objective, constraints, switching penalty, risk inflation) and personalization, per journey type. **Path-specific**; the alternative ordering is not computed. | Table 5, Fig. 2 |
+| `e6_metrics.csv` | Performance by journey type | Table B.2, Fig. B.1 |
+| `cost_benefit_summary.csv`, `cost_benefit.png`, `cba_sensitivity.csv` | Passenger-side time-cost proxy (USD) and ±20% valuation sensitivity; excludes airport, airline and ground-handling costs | Table B.3 |
+| `Q4_boxplot.png`, `Q4_tail_metrics.png`, `Q4_hourly_trend.png` | Journey-time distributions, tail metrics and time-of-day trend | Diagnostics |
+| `propensity_overlap.png` | Propensity distribution for the common-support check | §5.6 |
+| `pareto_frontier.png` | Descriptive efficiency–risk–equity view (supplementary; not part of the core attribution) | Not in the manuscript's core analysis |
+| `causal_results.csv`, `causal_forest.png`, `bayesian_contrasts.csv`, `bayesian_contrast.png` | Exploratory heterogeneous-effect and Bayesian contrasts | Exploratory only |
+| `figures/` | Curated publication figures | Figs. 1–5, A.1, B.1–B.2 |
 
-**Naming note.** The metric called the *Buffer Allocation Gap (BAG)* in this README may appear as `equity_gap` or "Equity Gap" in output files and database fields from earlier versions.
+**Naming note.** The BAG may appear as `equity_gap` or "Equity Gap" in output files and database fields from earlier versions. The ablation policy "CVaR-NoPersonalization" may appear as "CVaR-Generic".
 
 ---
 
 ## 8. Notebook Workflow
 
-The `notebooks/` directory provides a step-by-step guide to verifying the environment, running the pipeline, and analyzing the results.
-
-1.  `00_environment_check.ipynb`: Validate Python dependencies and database connectivity.
-2.  `01_run_migrations.ipynb`: Execute and verify the database schema setup.
-3.  `02_realtime_pipeline.ipynb`: Walk through a single cycle of data ingestion and feature engineering.
-4.  `03_offline_replay_E1_E6.ipynb`: Programmatically trigger the `ExperimentRunner` and log the resulting experiment ID.
-5.  `04_statistical_analysis.ipynb`: Load data from an experiment and perform the full analytical pipeline, including the component decomposition, replicating `export_reporting.py` interactively.
-6.  `05_appendix_figures.ipynb`: Generate additional visualizations, such as the Pareto view and causal-effect plots.
+1. `00_environment_check.ipynb`: validate Python dependencies and database connectivity.
+2. `01_run_migrations.ipynb`: execute and verify the schema setup.
+3. `02_realtime_pipeline.ipynb`: walk through one cycle of ingestion and feature engineering.
+4. `03_offline_replay_E1_E6.ipynb`: trigger the `ExperimentRunner` and log the experiment ID.
+5. `04_statistical_analysis.ipynb`: load an experiment and run the full analysis, including the component decomposition (interactive counterpart of `export_reporting.py`).
+6. `05_appendix_figures.ipynb`: generate additional visualizations, including the Pareto view and causal-effect plots.
 
 ---
 
 ## 9. Testing
 
-Run unit tests to ensure individual components are working correctly.
-
 ```bash
-# Run all fast unit tests
+# Fast unit tests
 pytest
 
-# Run integration tests (requires a populated database)
+# Integration tests (require a populated database)
 pytest -m integration
 ```
 
@@ -334,125 +351,204 @@ pytest -m integration
 
 ## 10. Data Governance and Security
 
-- **Secrets Management**: All sensitive information (database credentials, API keys) is managed exclusively through the `.env` file, which is git-ignored.
-- **Data Persistence**: All ingested data are stored in a user-controlled MySQL database. No data are stored in the repository. Use of the public IIAC and KMA data follows the providers' terms of service; retention should be limited to 90 days.
-- **PII**: The system uses synthetic passenger profiles and does not handle any personally identifiable information.
-- **API Compliance**: Ingestion scripts include automated retry with exponential backoff to respect provider rate limits.
-- **Causal Identifiability**: Propensity scores are logged for all recommendations. Three assumptions underlie the off-policy evaluation. *Snapshot ignorability* holds conditional on the logged state. *Positivity* is enforced by the ε-greedy rule and checked empirically (minimum propensity > 0.026, no overlap cell below 2%). *SUTVA* holds by construction because passenger outcomes are sampled independently and recommendations do not feed back into queues. Consequently, **the DR and naive estimates coincide to two decimals** in this simulator: propensities are near uniform, importance weights approach unity, and DR reduces to the naive estimator. The DR pipeline is therefore a consistency check, not an independent test of the policies. In live deployment, where passengers self-select, the correction would matter.
+- **Secrets**: credentials and API keys live only in `.env`, which is git-ignored.
+- **Data**: operational inputs come from public IIAC and KMA data services under the providers' terms of service. **Redistribution of raw provider data is restricted**, so the repository contains only processed snapshot features and configuration needed to rerun the replay. Retention should be limited to 90 days. Ingested data are stored in your own MySQL database.
+- **PII**: the system uses synthetic passenger profiles and handles no personally identifiable information.
+- **API compliance**: ingestion uses retry with exponential backoff to respect rate limits.
+- **Off-policy identification**: propensities are logged for every recommendation. Identification rests on snapshot ignorability, positivity (enforced by the ε-greedy rule; minimum observed propensity above 0.026) and SUTVA (by construction, because recommendations do not feed back into queues). Because all policies are replayed on identical simulated passengers and propensities are near uniform, **doubly robust and naive estimates agree to two decimals**. The DR pipeline is therefore a **consistency check for future live deployment, not an independent test of the policies**.
 
 ---
 
-## 11. Robustness Evidence and Validation Status (Offline Simulation)
+## 11. Evaluation Design and Verification & Validation Status
 
-All results below derive from the offline replay environment described in Section 1 and are conditional on the synthetic passenger generation protocol. They provide evidence of internal consistency within this simulation; live or shadow-mode validation is a necessary next step and is not claimed here.
+### 11.1 Replay design
 
-### 11.1 What the replay verifies and what it does not validate
+- **Real**: 36 consecutive five-minute snapshots (3 hours) from IIAC and KMA streams, including departure congestion and waiting time at the 12 Terminal 1 checkpoints, ordered chronologically for a first-18 versus last-18 holdout.
+- **Simulated**: 960 synthetic passengers per snapshot across seven cohorts (business travellers, standard adults, families with children, seniors, heavy-baggage travellers, passengers with reduced mobility, unaccompanied minors).
+- **Compliance**: assumed ε-greedy rule (ε = 0.2), which also supplies logging propensities. It is not estimated from data and does not respond to past recommendation quality.
+- **Consequences**: (i) the simulator is *model-in-the-loop*, so tail-risk benefits that depend on misspecification cannot appear and the fusion gain is partly built in; (ii) recommendations do not alter queues, so herding is not simulated; (iii) profile adjustments enter outcome sampling only under personalized policies, so the two policy classes face different true journey times.
 
-| Item                              | Status                    | Evidence and limitation                                                                                  |
-| --------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Exact reproducibility             | Verified                  | `snapshot_id` lineage and fixed seed (42)                                                                 |
-| Monte Carlo sample size           | Verified                  | CVaR estimates stabilize (coefficient of variation < 2%) at N ≥ 150; N = 200 runs in under 0.8 s per cycle |
-| Hard-constraint handling          | Verified by contrast      | Zero violations under Hybrid-CVaR vs. 2,362 (6.83%) under CVaR-NoConstraints; zero holds by construction  |
-| Positivity and estimator agreement | Checked                  | Minimum propensity > 0.026; DR and naive estimates agree to two decimals                                  |
-| Parameter sensitivity             | Checked                   | ±25% on calibrated parameters (E13); ±10% on constraint thresholds                                        |
-| Input snapshots                   | Real data                 | IIAC and KMA streams; only 36 snapshots (3 hours)                                                         |
-| Parking search model              | Consistent with literature | 5.6 and 10.1 min at occupancies 0.60 and 0.90; not compared with measured search times                   |
-| Journey-time distributions        | **Not validated**         | Not compared with observed passenger journeys                                                             |
-| Passenger compliance              | **Assumed**               | ε-greedy with ε = 0.2; no sensitivity analysis to the compliance rule has been performed                  |
-| Personalization factors           | Generator inputs          | Effects are conditional on the generator's profile model                                                  |
-| Queue feedback                    | **Absent**                | Herding and congestion feedback are not simulated; switch-rate results measure recommendation stability, not its effect on queues |
-| Scalability                       | Partly tested             | 12 Terminal 1 checkpoints under 0.8 s per cycle; larger networks untested                                 |
+### 11.2 Experiments
 
-### 11.2 Robustness results
+Ten experiments address the research questions; two diagnostics complement them.
 
-**Temporal robustness (E7).** CVaR₀.₉ drifted by less than 0.1% between the first 18 and last 18 snapshots (90 minutes each). This is a stability check over a limited period, not a test of seasonal or long-run drift.
+| Exp | Focus | Contrast | Role |
+| --- | ----- | -------- | ---- |
+| **E1** | Data fusion | Baseline vs. Hybrid-Mean | Context for RQ1 (gain partly built into the simulator) |
+| **E2** | Bundled policy | Hybrid-Mean vs. Hybrid-CVaR, decomposed via CVaR-NoPersonalization | RQ1 |
+| **E3** | Hard constraints | Hybrid-CVaR vs. CVaR-NoConstraints | Supporting check |
+| **E4** | Switching penalty | γ = 0 vs. γ = 1.5 (personalized policy) | RQ2 |
+| **E5** | Personalization | Generic vs. personalized profiles | RQ3 |
+| **E6** | Journey complexity | Q1 to Q4 | Face-validity check |
+| **E7** | Chronological holdout | First 18 vs. last 18 snapshots | Robustness |
+| **E8** | Unseen checkpoints | DG1–DG4 (calibration) vs. DG5–DG6 (test) | Robustness |
+| **E9** | Weather shock | 5 mm rainfall perturbation | Exploratory |
+| **E10** | Allocation | Vulnerable vs. general passengers (BAG) | RQ3 |
+| **E11** | Positivity diagnostics | Logged propensity distribution | Diagnostic |
+| **E13** | Parameter sensitivity | ±25% on calibrated parameters; ±10% on constraint thresholds | Diagnostic |
 
-**Spatial transfer (E8).** Calibrated on DG1–DG4 and tested on DG5–DG6, the framework achieved CVaR₀.₉ = 60.7 minutes with zero constraint violations. The KL divergence between in-domain and out-of-domain recommendation distributions is 0.770, which shows that allocations change in the new context; whether the change is appropriate was not assessed.
+(E12, a descriptive Pareto view, is supplementary and outside the core attribution.)
 
-**Weather shock (E9, exploratory).** Under a simulated 5 mm rainfall perturbation:
+**Statistics.** Welch's t-tests with Cohen's d for mean differences; snapshot-level BCa bootstrap intervals for tail quantities; Fisher's exact tests for binary outcomes; Holm–Bonferroni control across E1–E10; all intervals 95%. Metric definitions: **APT** (mean journey time), **Q90**, **CVaR₀.₉**, **miss rate** (share of journeys missing the boarding deadline), **acceptance rate** (determined by the assumed compliance rule in the replay), **switch rate** (share of recommendations that differ from the same passenger's previous-cycle recommendation), **BAG**.
 
-| Policy       | Unperturbed CVaR₀.₉ (approx.) | Absolute increase | Relative deterioration | Miss rate under shock |
-| ------------ | ----------------------------- | ----------------- | ---------------------- | --------------------- |
-| Hybrid-Mean  | ≈ 39.2 min                    | +3.92 min         | 10.0%                  | 0.00%                 |
-| Hybrid-CVaR  | ≈ 48.7 min                    | +4.53 min         | 9.3%                   | 0.90%                 |
+### 11.3 What the replay verifies and what it does not validate
 
-Unperturbed levels are back-calculated from the reported increases and relative deteriorations, and are computed on a separate shock-replay set, so they are not comparable with the pooled values in Section 12. Hybrid-CVaR shows a slightly smaller *relative* but larger *absolute* increase and a higher miss rate. The smaller relative deterioration **cannot be attributed to the CVaR objective**: personalization raises Hybrid-CVaR's unperturbed level and mechanically lowers the relative measure, and the test included neither CVaR-NoPersonalization nor more than one shock magnitude. E9 is therefore treated as consistent with, but not proof of, a stress-time role for tail-risk objectives.
-
-**Allocation (E10).** The BAG is +7.83 min for Hybrid-CVaR, vs. +0.03 min for Hybrid-Mean and +0.04 min for CVaR-Generic. The gap is the intended consequence of the personalization factors and does not arise from the routing objective, because no equity penalty enters the score. Its magnitude mirrors the generator's cohort corrections (+1.8 to +15.2 min by cohort) and should be read as an implementation consistency check, not as evidence about real passenger populations. Personalization effects on journey time range from +4.17 to +7.58 minutes across the four journey types (all p < 0.001; Cohen's d between 1.12 and 1.31).
-
-**Diagnostics (E11–E13).**
-- **E11**: minimum observed propensity > 0.026 across policies, with no overlap cell below 2%.
-- **E12**: a descriptive three-axis (efficiency, risk, equity) view across policies for policy selection; it is not part of the core attribution.
-- **E13**: APT variance = 0.075 and CVaR variance = 0.284 under ±25% perturbation of the calibrated parameters.
-
----
-
-## 12. Key Performance Results
-
-From 34,560 simulated passenger journeys across 36 historical snapshots. Intervals are 95% snapshot-level bootstrap intervals unless stated otherwise.
-
-### 12.1 Aggregate (pooled) policy comparison
-
-| Policy                  | APT (min)               | CVaR₀.₉ (min) | Acceptance (%) | Miss rate (%) |
-| ----------------------- | ----------------------- | ------------- | -------------- | ------------- |
-| Baseline                | 37.18 [37.01, 37.35]    | 48.95         | 80.6           | 0.00          |
-| Hybrid-Mean             | 37.15 [36.99, 37.31]    | 47.17         | 79.7           | 0.00          |
-| **Hybrid-CVaR**         | 43.51 [43.26, 43.76]    | 62.39         | 79.1           | 0.40          |
-| CVaR-NoHysteresis       | 43.50 [43.25, 43.75]    | 62.93         | 80.8           | 0.52          |
-| CVaR-NoPersonalization  | 37.23 [37.07, 37.39]    | 47.17         | 80.5           | 0.00          |
-
-Hybrid-CVaR shows **higher** pooled APT (+6.36 min, 17.1%) and CVaR₀.₉ (+15.22 min) than Hybrid-Mean, not lower. CVaR-NoPersonalization returns to Hybrid-Mean levels, so the increase comes from personalization and not from the CVaR objective, the hard constraints, or hysteresis. **The framework does not lower nominal tail risk relative to Hybrid-Mean.**
-
-Hard constraints: 0 violations in 34,560 journeys under Hybrid-CVaR (guaranteed by construction through a large closure penalty) vs. 6.83% infeasible recommendations (2,362) under CVaR-NoConstraints.
-
-Pooled switch rates by policy are written to `policy_summary.csv`; the switch-rate comparisons reported below use the Q4 (parking-to-gate) scenario.
-
-### 12.2 What drives the nominal APT increase?
-
-A component decomposition sequentially adds (i) the CVaR objective, hard constraints, and hysteresis, then (ii) personalization, to Hybrid-Mean (`component_decomposition.csv`):
-
-| Journey type             | Δ APT, CVaR obj. + constraints + hysteresis | Δ APT, personalization | Personalization share |
-| ------------------------ | -------------------------------------------- | ---------------------- | --------------------- |
-| Q1 (Check-in → Gate)     | +0.15 min                                    | +4.17 min              | 96.5%                 |
-| Q2 (Rail → Gate)         | −0.03 min                                    | +6.98 min              | 100.4%                |
-| Q3 (Curbside → Gate)     | −0.003 min                                   | +5.10 min              | 100.1%                |
-| Q4 (Parking → Gate)      | +0.15 min                                    | +7.57 min              | 98.1%                 |
-
-In Q4, 7.57 of the 7.72 minutes (Hybrid-Mean 41.89 → Hybrid-CVaR 49.61; 95% CI for the total change 6.51 to 8.89; Cohen's d = 1.17) are attributable to personalization along this path. The miss rate rises from 0.00% to 0.82% in Q4, and this increase is likewise tied to personalization. The attribution follows one path (Hybrid-Mean → CVaR-NoPersonalization → Hybrid-CVaR); because interactions may be present, "attributable" should be read as path-specific.
-
-The personalization effect follows from the generator's profile model, which assigns longer walking and check-in times to non-generic profiles. It quantifies the **planning allowance the framework allocates**, not an efficiency gain and not evidence that real generic predictions are biased.
-
-### 12.3 What is associated with the switch-rate reduction?
-
-Q4 switch rates by configuration:
-
-| Configuration                                              | CVaR obj. | Personalization | Hysteresis | Switch rate (Q4) |
-| ---------------------------------------------------------- | --------- | --------------- | ---------- | ---------------- |
-| Hybrid-Mean                                                | No        | No              | No         | 64.9%            |
-| CVaR-NoPersonalization                                     | Yes       | No              | Yes        | 80.0%            |
-| CVaR-NoHysteresis                                          | Yes       | Yes             | No         | 59.1%            |
-| **Hybrid-CVaR**                                            | Yes       | Yes             | Yes        | **26.0%**        |
-
-The reduction to 26.0% is **observed only in the configuration that combines hysteresis and personalization**. Hysteresis did not reduce switching when personalization was absent (80.0%, an unexpected result that is not explained here), and personalization without hysteresis lowered it only modestly. Because these configurations also differ in objective, and no configuration removes hysteresis while personalization is absent, the nested design supports only the statement that the *combination is associated with* the reduction, not that either component is necessary. One untested explanation is that personalization changes the spread of route scores so that a fixed switching penalty becomes comparable to score differences between routes. A full factorial ablation (objective × personalization × hysteresis) is required to quantify interactions.
-
-Effect of hysteresis within the personalized CVaR policy (Q4): switch rate 59.1% → 26.0% (56.0% relative reduction), with no significant change in mean time (ATE = +0.05 min, 95% CI −0.20 to 0.25, p = 0.740) or CVaR₀.₉ (66.58 → 66.04 min, p = 0.312). The pooled acceptance rate falls from 80.8% to 79.1% (−1.7 pp; nominal p = 0.042, a borderline result treated as indicative, not established).
-
-Effect of data fusion in Q4 (E1, Baseline → Hybrid-Mean): switch rate 75.7% → 64.9% and Q90 −1.88 min (both p < 0.001), with a non-significant mean-time change (−0.21 min, p = 0.097). Because outcomes are sampled from the blended distributions, this gain is partly built into the model-in-the-loop simulator.
-
-### 12.4 What is and is not established
-
-| Question                                        | Established in the replay                                                                  | Not established                                                                              |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| Where does the nominal mean-time cost come from? | Personalization (96–101% of the increase, path-specific)                                   | Whether the allowances match real passenger needs                                            |
-| What stabilizes recommendations?                | Hysteresis combined with personalization (59.1% → 26.0%)                                   | The separate roles of the two; effects on queues and passenger trust                         |
-| Does the CVaR objective help?                   | No standalone effect under nominal conditions                                              | Any benefit under stress or predictive misspecification (the design cannot isolate it)       |
-| Are operating limits respected?                 | Zero violations (by construction); 6.83% infeasible without constraints                    | Behavior under real rule changes                                                             |
-| How is allowance allocated across segments?     | BAG 0.03 → 7.83 min, traceable to personalization                                         | An appropriate target level; real-population equity                                           |
-
-**Suggested extensions** that this repository does not yet implement: a full factorial design crossing objective, personalization, and hysteresis; stress tests that include CVaR-NoPersonalization across several shock magnitudes and confidence levels; a decision-divergence rate (the share of decisions in which the mean and CVaR objectives select different routes); sensitivity to the compliance rule; comparison of simulated journey-time distributions with observed journeys; and shadow-mode operation in which recommendations are logged but not shown.
+| Item | Status | Evidence and limitation |
+| ---- | ------ | ----------------------- |
+| Exact reproducibility | Verified | `snapshot_id` lineage and fixed seed (42) |
+| Monte Carlo sample size | Verified | CVaR estimates stabilize (CV < 2%) at N ≥ 150; N = 200 runs in under 0.8 s per cycle |
+| Hard-constraint handling | Verified by contrast | 0 violations vs. 2,362 (6.83%) without constraints; zero holds by construction |
+| Positivity and estimator agreement | Checked | Minimum propensity above 0.026; DR and naive agree to two decimals |
+| Parameter sensitivity | **Partly checked** | ±25% on calibrated parameters (spread of APT and CVaR₀.₉ reported); **policy ranking and sign of the switching effect not examined**; ±10% on constraint thresholds (zero violations preserved) |
+| Input snapshots | Real data | IIAC and KMA streams; short window |
+| Journey-time distributions | **Not validated** | Not compared with observed passenger journeys; parking-search model consistent with literature but not with measured search times |
+| Passenger compliance | **Assumed** | ε = 0.2; no sensitivity analysis performed |
+| Personalization factors | Generator inputs | Effects are conditional on the generator's profile model |
+| Queue feedback | **Absent** | Effects of switching on queues and herding cannot be observed |
+| Scalability | Partly tested | 12 Terminal 1 checkpoints under 0.8 s per cycle; larger networks untested |
 
 ---
 
-## 13. License
+## 12. Key Results
+
+From 34,560 simulated journeys across 36 snapshots. Intervals are 95% snapshot-level bootstrap intervals. Contrasts labeled Q4 refer to the parking-to-gate scenario; other values are pooled.
+
+### 12.1 Pooled policy performance
+
+| Policy | APT (min) [95% CI] | CVaR₀.₉ (min) | Acceptance (%) | Miss rate (%) |
+| ------ | ------------------ | ------------- | -------------- | ------------- |
+| Baseline | 37.18 [37.01, 37.35] | 48.95 | 80.6 | 0.00 |
+| Hybrid-Mean | 37.15 [36.99, 37.31] | 47.17 | 79.7 | 0.00 |
+| **Hybrid-CVaR** | 43.51 [43.26, 43.76] | 62.39 | 79.1 | 0.40 |
+| CVaR-NoHysteresis | 43.50 [43.25, 43.75] | 62.93 | 80.8 | 0.52 |
+| CVaR-NoPersonalization | 37.23 [37.07, 37.39] | 47.17 | 80.5 | 0.00 |
+
+_Acceptance follows the assumed ε-greedy rule and is reported for completeness; it is not an outcome of passenger behavior._
+
+Two regimes emerge. Hybrid-CVaR **raises** pooled APT by 6.36 min (17.1%) and CVaR₀.₉ by 15.22 min relative to Hybrid-Mean. CVaR-NoPersonalization returns to Hybrid-Mean levels, so the increase comes from personalization. The framework does **not** lower nominal tail risk relative to Hybrid-Mean, and no tail-risk gain is credited to the CVaR objective (offsetting individual effects cannot be excluded because components were not removed one at a time).
+
+### 12.2 RQ1: which lever carries the recommended-time cost?
+
+Decomposition of the Hybrid-Mean → Hybrid-CVaR change (minutes; "Other" = CVaR objective, hard constraints, switching penalty and risk inflation):
+
+| Journey type | ΔAPT | Other | Personalization (share) | ΔCVaR₀.₉ | Other | Personalization (share) |
+| ------------ | ---- | ----- | ----------------------- | -------- | ----- | ----------------------- |
+| Q1 Check-in to gate | +4.318 | +0.152 | +4.166 (96.5%) | +7.952 | +0.121 | +7.831 (98.5%) |
+| Q2 Rail to gate | +6.957 | −0.026 | +6.983 (100.4%) | +14.098 | −0.141 | +14.239 (101.0%) |
+| Q3 Curbside to gate | +5.094 | −0.003 | +5.097 (100.1%) | +9.246 | +0.342 | +8.904 (96.3%) |
+| Q4 Parking to gate | +7.722 | +0.150 | +7.572 (98.1%) | +16.523 | −0.065 | +16.588 (100.4%) |
+
+- Q4 (E2): +7.72 min (18.4%; 95% CI 6.51 to 8.89; d = 1.17; p < 0.001); miss rate rises from 0.00% to 0.82% (95% CI 0.51 to 1.13), likewise tied to personalization.
+- Shares above or below 100% reflect offsetting contributions of the other components.
+- The attribution follows **one path** (Hybrid-Mean → CVaR-NoPersonalization → Hybrid-CVaR); interactions may be present and the alternative ordering was not computed.
+- Data fusion (E1, Q4): mean time −0.21 min (p = 0.097, n.s.), Q90 −1.88 min and switch rate 75.7% → 64.9% (both p < 0.001); partly built into the simulator.
+
+### 12.3 RQ2: what governs recommendation stability?
+
+| Q4 configuration | CVaR bundle | Personalization | Switching penalty | APT (min) | CVaR₀.₉ (min) | Switch rate (%) |
+| ---------------- | ----------- | --------------- | ----------------- | --------- | ------------- | --------------- |
+| Hybrid-Mean | No | No | No | 41.89 | n/a | 64.9 |
+| CVaR-NoPersonalization | Yes | No | Yes | 42.04 (derived: 49.61 − 7.57) | n/a | 80.0 |
+| CVaR-NoHysteresis | Yes | Yes | No | 49.57 | 66.58 | 59.1 |
+| **Hybrid-CVaR** | Yes | Yes | Yes | 49.61 | 66.04 | **26.0** |
+
+The "CVaR bundle" is the CVaR objective, hard constraints and risk inflation switched on together.
+
+- Within the personalized policy the penalty cuts switching from 59.1% to 26.0% (56.0% relative reduction) with no significant change in mean time (+0.05 min; p = 0.740) or CVaR₀.₉ (p = 0.312).
+- Without personalization the penalty's effect is **not identified** (no γ = 0 arm); the rise from 64.9% to 80.0% reflects the CVaR bundle and the penalty together and is unexplained. The claim is only that the **combination is associated with** the reduction.
+- One untested explanation: personalization changes the spread of route scores so that a fixed penalty becomes comparable to score differences between routes.
+- Pooled acceptance moves from 80.8% to 79.1% (nominal p = 0.042), but acceptance is fixed by the assumed compliance rule and is **not evidence on passenger acceptance**; measuring it requires a field trial.
+
+### 12.4 RQ3: how is planning allowance allocated?
+
+**Personalization effects on journey time (E5, doubly robust):**
+
+| Journey type | ATE [95% CI] (min) | Cohen's d |
+| ------------ | ------------------ | --------- |
+| Q1 Check-in to gate | +4.17 [3.49, 4.80] | 1.31 |
+| Q2 Rail to gate | +7.01 [5.85, 8.14] | 1.27 |
+| Q3 Curbside to gate | +5.09 [4.30, 5.89] | 1.12 |
+| Q4 Parking to gate | +7.58 [6.38, 8.75] | 1.15 |
+
+All p < 0.001. Because the direction follows from the generator's profile model, these effects quantify the buffer allocated.
+
+**Planning allowance by cohort (generator inputs, relative to the generic profile):**
+
+| Cohort | Mean allowance (min) | Vulnerable |
+| ------ | -------------------- | ---------- |
+| Business travellers | +1.8 | No |
+| Standard adults | +2.1 | No |
+| Heavy-baggage travellers | +6.7 | No |
+| Senior passengers | +8.4 | Yes |
+| Families with children | +9.1 | Yes |
+| Passengers with reduced mobility | +12.3 | Yes |
+| Unaccompanied minors | +15.2 | Yes |
+
+Allowances scale with the length of the walking and check-in components, so values vary by journey type.
+
+**BAG by policy (Q4, E10):** Hybrid-Mean 0.03 · CVaR-NoPersonalization 0.04 · **Hybrid-CVaR 7.83 min**. As a consistency check of Remark 1, with ATE = 7.58 and Δ₀ ≈ 0.03, the implied general-cohort allowance ā_G ≈ 7.58 − 7.80w lies within the cohort range (+1.8 to +6.7 min) if and only if the vulnerable share w is between about 0.11 and 0.74. The check is approximate and tests the simulator, not real passengers.
+
+Two features qualify the single number: heavy-baggage travellers (no vulnerability criterion) receive +6.7 min yet are counted as general, which lowers the BAG; and the BAG is silent on allocation within the vulnerable group (+8.4 for seniors to +15.2 for unaccompanied minors).
+
+### 12.5 Constraints, robustness and cost
+
+- **Hard constraints (E3)**: 0 violations under Hybrid-CVaR (by construction) vs. 2,362 infeasible recommendations (6.83%) under CVaR-NoConstraints; zero violations persist under ±10% threshold perturbations.
+- **Journey complexity (E6)**: APT/CVaR₀.₉ are lowest for Q1 (32.55 / 39.83 min) and highest for Q4 (47.07 / 64.57); the two-stage order is Q3 < Q2 < Q4, so stage count alone does not explain it. Face-validity check only.
+- **Holdout and unseen checkpoints (E7, E8)**: CVaR₀.₉ drifted by less than 0.1% between the first and last 18 snapshots; on unseen checkpoints DG5–DG6 CVaR₀.₉ = 60.7 min with no violations, and the recommendation distribution shifted (KL = 0.770; appropriateness not assessed).
+- **Weather shock (E9, exploratory)**: a 5 mm rainfall shock raised CVaR₀.₉ by 4.53 min for Hybrid-CVaR (+9.3%; miss rate 0.90%) and 3.92 min for Hybrid-Mean (+10.0%; miss rate 0.00%). Because personalization raises the unperturbed level and the test lacks CVaR-NoPersonalization and multiple shock magnitudes, the smaller relative rise **cannot be attributed to the CVaR objective**. The shock replay uses a separate set (unperturbed levels about 48.7 and 39.2 min), so levels are not comparable with Section 12.1.
+- **Passenger-side time cost**: relative to Baseline (USD 24.74 per observation), Hybrid-Mean is USD 0.22 cheaper and Hybrid-CVaR USD 3.39 more expensive, mainly reflecting the buffer allocated through personalization. The ordering is unchanged under ±20% valuation perturbations. Cost components were not decomposed, so this is not read as a monetary value of stabilization.
+- **Sensitivity (E13)**: ±25% perturbation of calibrated parameters gives variance 0.075 min² (APT) and 0.284 min² (CVaR₀.₉), i.e. standard deviations of about 0.27 and 0.53 min. Whether policy ranking and the sign of the switching effect are preserved was **not examined**.
+
+### 12.6 What is and is not established
+
+| Question | Established in the replay | Not established |
+| -------- | ------------------------- | --------------- |
+| Where does the recommended-time cost come from? | Personalization (96.5–100.4% of the APT increase, path-specific) | Whether the allowances match real passenger needs |
+| What stabilizes recommendations? | The penalty within the personalized policy (59.1% → 26.0%) | The separate roles of penalty and personalization; effects on queues and trust |
+| Does the CVaR objective help? | No standalone effect under nominal conditions | Any benefit under stress or misspecification (the design cannot isolate it) |
+| Are operating limits respected? | 0 violations (by construction); 6.83% infeasible without constraints | Behavior under real rule changes |
+| How is allowance allocated? | BAG 0.03 → 7.83 min, traceable to personalization | An appropriate target level; real-population equity |
+
+---
+
+## 13. Implications for Operators and Staged Validation
+
+These are proposals derived from a simulation, **not** descriptions of current regulation or of any airport's practice.
+
+### 13.1 Constraints-first order of decisions (motivated by the replay, not tested by it)
+
+1. **Hard operating constraints are non-negotiable** and are verified before any comparison (they removed the 6.83% of otherwise infeasible recommendations).
+2. **Set personalization strength as an explicit service-standard decision**, with segment allowances calibrated against measured processing times and its mean-time cost and miss rate reviewed together.
+3. **Monitor the BAG by segment** against a need-based reference; prefer a two-sided corridor to a one-sided cap (untested). The aggregate BAG is a first-level screen only.
+4. **Tune the switching penalty and any tail-risk objective last**, and adopt them only if shadow-mode divergence and tail outcomes warrant it.
+
+### 13.2 Staged route from replay to operation
+
+| Stage | Purpose | Decision gate |
+| ----- | ------- | ------------- |
+| 0. Offline replay (this repository) | Attribute component effects | Proceed to validation only; no operational claim |
+| 1. Generator validation | Compare simulated journey-time distributions and compliance with observed journeys; test sensitivity to the compliance rule | Recalibrate personalization factors; stop if distributions diverge materially |
+| 2. Shadow mode | Log recommendations without showing them; compute switch rate, decision-divergence rate and BAG against a need-based reference, including a period with adverse weather | Proceed if behavior resembles the replay; otherwise retune γ and allowances |
+| 3. Controlled field trial | Show recommendations to opt-in passengers at selected checkpoints with a holdout group | Expand only on pre-registered criteria |
+| 4. Network operation | Scale to all 12 checkpoints with drift and equity dashboards | Periodic recalibration |
+
+---
+
+## 14. Limitations and Research Agenda
+
+**Limitations.** (1) All results come from offline replay with synthetic passengers under an assumed compliance rule; journey times are not validated against observed ones. (2) The data are 36 five-minute snapshots from one terminal; seasonal and long-run drift are not assessed. (3) The ablation is nested, not factorial: the standalone effect of the tail-risk objective and the penalty's effect without personalization are not identified, and interactions cannot be quantified. (4) Stress evidence rests on one shock type and magnitude. (5) The BAG is a mean difference; miss rates and realized times are not broken down by vulnerable and general passengers, and the cost analysis covers passenger-side time only. Zero-violation and positivity results hold by construction.
+
+**Priority extensions (not implemented in this repository).**
+
+- (a) A **personalization-strength sweep** that converts the single-point cost into a price-of-allowance frontier (mean time, miss rate and BAG as the allowance scale moves from zero to the generator value);
+- (b) a segment-level decomposition of the miss rate;
+- (c) a full factorial design crossing objective, personalization and switching penalty, including the missing CVaR-NoPersonalization arm with γ = 0;
+- (d) stress tests including CVaR-NoPersonalization across shock magnitudes;
+- (e) sensitivity to the compliance rule and to the calibrated parameters, reporting whether policy ranking and the sign of the switching effect are preserved;
+- (f) shadow-mode validation (Stage 2 above), including a decision-divergence rate (share of decisions where the mean and CVaR objectives choose different routes).
+
+---
+
+## 15. License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
